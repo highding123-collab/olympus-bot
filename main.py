@@ -7,6 +7,7 @@ from io import BytesIO
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import PIL
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from PIL import Image, ImageDraw, ImageFont
@@ -67,7 +68,7 @@ def init_db():
             status TEXT NOT NULL  -- OPEN, CLOSING, CLOSED
         );
 
-        -- One bet per user per round
+        -- One bet per user per round (simple & safe)
         CREATE TABLE IF NOT EXISTS bets(
             chat_id INTEGER NOT NULL,
             round_id INTEGER NOT NULL,
@@ -209,7 +210,7 @@ def play_baccarat(chat_id: int):
     banker = [draw_card(chat_id), draw_card(chat_id)]
 
     def total(hand):
-        return sum(card_value(r) for r, s in hand) % 10
+        return sum(card_value(r) for r, _ in hand) % 10
 
     p = total(player)
     b = total(banker)
@@ -294,56 +295,88 @@ def draw_road_image_bytes(chat_id: int) -> BytesIO:
     return bio
 
 
-# ================== CARD REVEAL GIF ==================
+# ================== CARD REVEAL GIF (FIXED FONTS) ==================
+
+def _load_font(size: int) -> ImageFont.ImageFont:
+    """
+    확실히 글자/문양(♠♥♦♣) 보이게 Pillow 내장 DejaVuSans 경로를 우선 탐색.
+    """
+    pil_font = os.path.join(os.path.dirname(PIL.__file__), "fonts", "DejaVuSans.ttf")
+    candidates = [
+        pil_font,
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def _text_with_shadow(draw: ImageDraw.ImageDraw, xy, text: str, font, fill: str,
+                      shadow: str = "#000000", offset: int = 2):
+    x, y = xy
+    draw.text((x + offset, y + offset), text, font=font, fill=shadow)
+    draw.text((x, y), text, font=font, fill=fill)
+
 
 def make_reveal_gif(player, banker, p, b, result) -> BytesIO:
     W, H = 900, 520
     bg = "#0b1220"
     table = "#0f2a1c"
 
-    try:
-        font_big = ImageFont.truetype("DejaVuSans.ttf", 32)
-        font_mid = ImageFont.truetype("DejaVuSans.ttf", 24)
-    except:
-        font_big = ImageFont.load_default()
-        font_mid = ImageFont.load_default()
+    font_big = _load_font(52)   # 크게!
+    font_mid = _load_font(34)
+    font_small = _load_font(22)
 
     def suit_color(s):
         return "#ff4b4b" if s in ["♥", "♦"] else "#111111"
 
     def draw_card_face(draw, x, y, r, s, face_up=True):
-        cw, ch = 90, 130
+        cw, ch = 100, 145
         if face_up:
-            draw.rounded_rectangle([x, y, x + cw, y + ch], radius=10, fill="#f8fafc", outline="#94a3b8", width=3)
-            draw.text((x + 10, y + 10), f"{r}", fill="#111111", font=font_mid)
-            draw.text((x + 10, y + 45), f"{s}", fill=suit_color(s), font=font_big)
+            draw.rounded_rectangle(
+                [x, y, x + cw, y + ch],
+                radius=12, fill="#f8fafc", outline="#94a3b8", width=3
+            )
+            # rank + suit (shadow for readability)
+            _text_with_shadow(draw, (x + 12, y + 10), f"{r}", font_mid, "#111111", shadow="#cbd5e1", offset=1)
+            _text_with_shadow(draw, (x + 12, y + 55), f"{s}", font_big, suit_color(s), shadow="#cbd5e1", offset=1)
         else:
-            draw.rounded_rectangle([x, y, x + cw, y + ch], radius=10, fill="#1e293b", outline="#64748b", width=3)
+            draw.rounded_rectangle(
+                [x, y, x + cw, y + ch],
+                radius=12, fill="#1e293b", outline="#64748b", width=3
+            )
             for i in range(0, cw, 12):
                 draw.line([x + i, y, x, y + i], fill="#334155", width=2)
+                draw.line([x + cw - i, y + ch, x + cw, y + ch - i], fill="#334155", width=2)
 
     def base_frame(title_text=None, highlight=None):
         img = Image.new("RGB", (W, H), bg)
         draw = ImageDraw.Draw(img)
 
         draw.rounded_rectangle([30, 40, W - 30, H - 40], radius=30, fill=table, outline="#1f2937", width=4)
-        draw.text((50, 60), "PLAYER", fill="#60a5fa", font=font_big)
-        draw.text((W - 260, 60), "BANKER", fill="#fb7185", font=font_big)
+        _text_with_shadow(draw, (55, 60), "PLAYER", font_mid, "#60a5fa", shadow="#000000", offset=2)
+        _text_with_shadow(draw, (W - 260, 60), "BANKER", font_mid, "#fb7185", shadow="#000000", offset=2)
 
         if title_text:
-            draw.text((W // 2 - 140, 60), title_text, fill="#fbbf24", font=font_mid)
+            _text_with_shadow(draw, (W // 2 - 120, 62), title_text, font_small, "#fbbf24", shadow="#000000", offset=2)
 
         if highlight == "P":
             draw.rounded_rectangle([40, 45, W // 2 - 20, H - 50], radius=28, outline="#60a5fa", width=6)
         elif highlight == "B":
             draw.rounded_rectangle([W // 2 + 20, 45, W - 40, H - 50], radius=28, outline="#fb7185", width=6)
+        elif highlight == "T":
+            _text_with_shadow(draw, (W // 2 - 40, 420), "TIE", font_mid, "#fbbf24", shadow="#000000", offset=2)
 
         return img, draw
 
+    # layout
     px0, py0 = 70, 130
-    bx0, by0 = W - 70 - (90 * 3 + 20 * 2), 130
+    bx0, by0 = W - 70 - (100 * 3 + 20 * 2), 130
     gap = 20
 
+    # reveal order
     reveal_steps = []
     if len(player) >= 1: reveal_steps.append(("P", 0))
     if len(banker) >= 1: reveal_steps.append(("B", 0))
@@ -362,12 +395,13 @@ def make_reveal_gif(player, banker, p, b, result) -> BytesIO:
     img, draw = base_frame("Revealing...", None)
     for i in range(3):
         if i < len(player):
-            draw_card_face(draw, px0 + i * (90 + gap), py0, "?", "?", face_up=False)
+            draw_card_face(draw, px0 + i * (100 + gap), py0, "?", "?", face_up=False)
         if i < len(banker):
-            draw_card_face(draw, bx0 + i * (90 + gap), by0, "?", "?", face_up=False)
+            draw_card_face(draw, bx0 + i * (100 + gap), by0, "?", "?", face_up=False)
     frames.append(img)
     durations.append(500)
 
+    # reveal one by one
     for side, idx in reveal_steps:
         if side == "P":
             shown_p.add(idx)
@@ -378,34 +412,35 @@ def make_reveal_gif(player, banker, p, b, result) -> BytesIO:
 
         for i in range(len(player)):
             r, s = player[i]
-            draw_card_face(draw, px0 + i * (90 + gap), py0, r, s, face_up=(i in shown_p))
+            draw_card_face(draw, px0 + i * (100 + gap), py0, r, s, face_up=(i in shown_p))
 
         for i in range(len(banker)):
             r, s = banker[i]
-            draw_card_face(draw, bx0 + i * (90 + gap), by0, r, s, face_up=(i in shown_b))
+            draw_card_face(draw, bx0 + i * (100 + gap), by0, r, s, face_up=(i in shown_b))
 
-        draw.text((50, 300), f"TOTAL: {p}", fill="#e2e8f0", font=font_mid)
-        draw.text((W - 260, 300), f"TOTAL: {b}", fill="#e2e8f0", font=font_mid)
+        _text_with_shadow(draw, (55, 320), f"TOTAL: {p}", font_mid, "#e2e8f0", shadow="#000000", offset=2)
+        _text_with_shadow(draw, (W - 260, 320), f"TOTAL: {b}", font_mid, "#e2e8f0", shadow="#000000", offset=2)
 
         frames.append(img)
         durations.append(450)
 
     # final frame
-    img, draw = base_frame("RESULT", result if result in ("P", "B") else None)
+    highlight = result if result in ("P", "B") else "T"
+    img, draw = base_frame("RESULT", highlight)
 
     for i in range(len(player)):
         r, s = player[i]
-        draw_card_face(draw, px0 + i * (90 + gap), py0, r, s, face_up=True)
+        draw_card_face(draw, px0 + i * (100 + gap), py0, r, s, face_up=True)
 
     for i in range(len(banker)):
         r, s = banker[i]
-        draw_card_face(draw, bx0 + i * (90 + gap), by0, r, s, face_up=True)
+        draw_card_face(draw, bx0 + i * (100 + gap), by0, r, s, face_up=True)
 
-    draw.text((50, 300), f"TOTAL: {p}", fill="#e2e8f0", font=font_mid)
-    draw.text((W - 260, 300), f"TOTAL: {b}", fill="#e2e8f0", font=font_mid)
+    _text_with_shadow(draw, (55, 320), f"TOTAL: {p}", font_mid, "#e2e8f0", shadow="#000000", offset=2)
+    _text_with_shadow(draw, (W - 260, 320), f"TOTAL: {b}", font_mid, "#e2e8f0", shadow="#000000", offset=2)
 
     result_text = f"RESULT: {BET_CHOICES.get(result, result)}"
-    draw.text((W // 2 - 170, 420), result_text, fill="#fbbf24", font=font_big)
+    _text_with_shadow(draw, (W // 2 - 190, 420), result_text, font_mid, "#fbbf24", shadow="#000000", offset=3)
 
     frames.append(img)
     durations.append(1400)
@@ -471,7 +506,7 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
                 total_payout += payout
                 lines.append(f"🎯 {uid} +{payout}")
             else:
-                # refund
+                # refund (and count it in payout for correct house accounting)
                 credit(uid, amt)
                 total_payout += amt
                 lines.append(f"↩️ {uid} 환급 +{amt}")
@@ -504,11 +539,11 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
         conn.execute("UPDATE rounds SET status='CLOSED' WHERE chat_id=? AND round_id=?", (chat_id, round_id))
         conn.commit()
 
-    # 1) reveal gif (cards one-by-one)
+    # 1) reveal gif
     reveal_gif = make_reveal_gif(player, banker, p, b, result)
     await app.bot.send_animation(chat_id, animation=reveal_gif)
 
-    # 2) big road image
+    # 2) big road
     road_img = draw_road_image_bytes(chat_id)
     await app.bot.send_photo(chat_id, photo=road_img)
 
