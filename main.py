@@ -8,12 +8,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
-from PIL import Image, ImageDraw
+from telegram.ext import Application, CommandHandler, ContextTypes
+from PIL import Image, ImageDraw, ImageFont
 
 # ================== CONFIG ==================
 
@@ -50,7 +46,6 @@ KST = ZoneInfo("Asia/Seoul")
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
-    # Better concurrency for sqlite
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
@@ -72,7 +67,7 @@ def init_db():
             status TEXT NOT NULL  -- OPEN, CLOSING, CLOSED
         );
 
-        -- One bet per user per round (simple, safe).
+        -- One bet per user per round
         CREATE TABLE IF NOT EXISTS bets(
             chat_id INTEGER NOT NULL,
             round_id INTEGER NOT NULL,
@@ -169,7 +164,7 @@ def card_value(rank: str) -> int:
 
 def create_shoe():
     deck = []
-    for _ in range(8):  # 8-deck shoe
+    for _ in range(8):
         for s in SUIT:
             for r in RANK:
                 deck.append((r, s))
@@ -193,7 +188,6 @@ def get_shoe(chat_id: int):
 
 def draw_card(chat_id: int):
     deck, pos = get_shoe(chat_id)
-    # reshuffle if near end
     if pos >= len(deck) - 6:
         deck = create_shoe()
         pos = 0
@@ -220,18 +214,15 @@ def play_baccarat(chat_id: int):
     p = total(player)
     b = total(banker)
 
-    # Natural
     if p in (8, 9) or b in (8, 9):
         return player, banker, p, b
 
     third = None
-    # Player draws on 0-5
     if p <= 5:
         third = draw_card(chat_id)
         player.append(third)
         p = total(player)
 
-    # Banker rules
     if third is None:
         if b <= 5:
             banker.append(draw_card(chat_id))
@@ -265,13 +256,11 @@ def build_road(chat_id: int):
 def draw_road_image_bytes(chat_id: int) -> BytesIO:
     results = build_road(chat_id)
 
-    # keep last N for readability
     MAX_RESULTS = 200
     if len(results) > MAX_RESULTS:
         results = results[-MAX_RESULTS:]
 
     cell = 30
-    # columns depend on non-tie streak changes; we'll just cap width
     cols = 40
     img = Image.new("RGB", (cols * cell, 6 * cell + 20), "#111")
     draw = ImageDraw.Draw(img)
@@ -287,8 +276,8 @@ def draw_road_image_bytes(chat_id: int) -> BytesIO:
             col += 1
             row = 0
         if col >= cols:
-            # stop drawing if exceeds canvas
             break
+
         x0 = col * cell + 5
         y0 = row * cell + 5
         x1 = x0 + 20
@@ -305,10 +294,141 @@ def draw_road_image_bytes(chat_id: int) -> BytesIO:
     return bio
 
 
+# ================== CARD REVEAL GIF ==================
+
+def make_reveal_gif(player, banker, p, b, result) -> BytesIO:
+    W, H = 900, 520
+    bg = "#0b1220"
+    table = "#0f2a1c"
+
+    try:
+        font_big = ImageFont.truetype("DejaVuSans.ttf", 32)
+        font_mid = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except:
+        font_big = ImageFont.load_default()
+        font_mid = ImageFont.load_default()
+
+    def suit_color(s):
+        return "#ff4b4b" if s in ["♥", "♦"] else "#111111"
+
+    def draw_card_face(draw, x, y, r, s, face_up=True):
+        cw, ch = 90, 130
+        if face_up:
+            draw.rounded_rectangle([x, y, x + cw, y + ch], radius=10, fill="#f8fafc", outline="#94a3b8", width=3)
+            draw.text((x + 10, y + 10), f"{r}", fill="#111111", font=font_mid)
+            draw.text((x + 10, y + 45), f"{s}", fill=suit_color(s), font=font_big)
+        else:
+            draw.rounded_rectangle([x, y, x + cw, y + ch], radius=10, fill="#1e293b", outline="#64748b", width=3)
+            for i in range(0, cw, 12):
+                draw.line([x + i, y, x, y + i], fill="#334155", width=2)
+
+    def base_frame(title_text=None, highlight=None):
+        img = Image.new("RGB", (W, H), bg)
+        draw = ImageDraw.Draw(img)
+
+        draw.rounded_rectangle([30, 40, W - 30, H - 40], radius=30, fill=table, outline="#1f2937", width=4)
+        draw.text((50, 60), "PLAYER", fill="#60a5fa", font=font_big)
+        draw.text((W - 260, 60), "BANKER", fill="#fb7185", font=font_big)
+
+        if title_text:
+            draw.text((W // 2 - 140, 60), title_text, fill="#fbbf24", font=font_mid)
+
+        if highlight == "P":
+            draw.rounded_rectangle([40, 45, W // 2 - 20, H - 50], radius=28, outline="#60a5fa", width=6)
+        elif highlight == "B":
+            draw.rounded_rectangle([W // 2 + 20, 45, W - 40, H - 50], radius=28, outline="#fb7185", width=6)
+
+        return img, draw
+
+    px0, py0 = 70, 130
+    bx0, by0 = W - 70 - (90 * 3 + 20 * 2), 130
+    gap = 20
+
+    reveal_steps = []
+    if len(player) >= 1: reveal_steps.append(("P", 0))
+    if len(banker) >= 1: reveal_steps.append(("B", 0))
+    if len(player) >= 2: reveal_steps.append(("P", 1))
+    if len(banker) >= 2: reveal_steps.append(("B", 1))
+    if len(player) >= 3: reveal_steps.append(("P", 2))
+    if len(banker) >= 3: reveal_steps.append(("B", 2))
+
+    frames = []
+    durations = []
+
+    shown_p = set()
+    shown_b = set()
+
+    # frame 0: all back
+    img, draw = base_frame("Revealing...", None)
+    for i in range(3):
+        if i < len(player):
+            draw_card_face(draw, px0 + i * (90 + gap), py0, "?", "?", face_up=False)
+        if i < len(banker):
+            draw_card_face(draw, bx0 + i * (90 + gap), by0, "?", "?", face_up=False)
+    frames.append(img)
+    durations.append(500)
+
+    for side, idx in reveal_steps:
+        if side == "P":
+            shown_p.add(idx)
+        else:
+            shown_b.add(idx)
+
+        img, draw = base_frame("Revealing...", None)
+
+        for i in range(len(player)):
+            r, s = player[i]
+            draw_card_face(draw, px0 + i * (90 + gap), py0, r, s, face_up=(i in shown_p))
+
+        for i in range(len(banker)):
+            r, s = banker[i]
+            draw_card_face(draw, bx0 + i * (90 + gap), by0, r, s, face_up=(i in shown_b))
+
+        draw.text((50, 300), f"TOTAL: {p}", fill="#e2e8f0", font=font_mid)
+        draw.text((W - 260, 300), f"TOTAL: {b}", fill="#e2e8f0", font=font_mid)
+
+        frames.append(img)
+        durations.append(450)
+
+    # final frame
+    img, draw = base_frame("RESULT", result if result in ("P", "B") else None)
+
+    for i in range(len(player)):
+        r, s = player[i]
+        draw_card_face(draw, px0 + i * (90 + gap), py0, r, s, face_up=True)
+
+    for i in range(len(banker)):
+        r, s = banker[i]
+        draw_card_face(draw, bx0 + i * (90 + gap), by0, r, s, face_up=True)
+
+    draw.text((50, 300), f"TOTAL: {p}", fill="#e2e8f0", font=font_mid)
+    draw.text((W - 260, 300), f"TOTAL: {b}", fill="#e2e8f0", font=font_mid)
+
+    result_text = f"RESULT: {BET_CHOICES.get(result, result)}"
+    draw.text((W // 2 - 170, 420), result_text, fill="#fbbf24", font=font_big)
+
+    frames.append(img)
+    durations.append(1400)
+
+    bio = BytesIO()
+    bio.name = "reveal.gif"
+    frames[0].save(
+        bio,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+    )
+    bio.seek(0)
+    return bio
+
+
 # ================== SETTLEMENT ==================
 
 async def settle_round(app: Application, chat_id: int, round_id: int):
-    # Guard: only settle OPEN round once
+    # guard against double settlement
     with db() as conn:
         r = conn.execute(
             "SELECT status FROM rounds WHERE chat_id=? AND round_id=?",
@@ -316,13 +436,11 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
         ).fetchone()
         if not r or r["status"] != "OPEN":
             return
-        conn.execute(
-            "UPDATE rounds SET status='CLOSING' WHERE chat_id=? AND round_id=?",
-            (chat_id, round_id)
-        )
+        conn.execute("UPDATE rounds SET status='CLOSING' WHERE chat_id=? AND round_id=?", (chat_id, round_id))
         conn.commit()
 
     player, banker, p, b = play_baccarat(chat_id)
+
     if p > b:
         result = "P"
     elif b > p:
@@ -346,7 +464,6 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
         amt = int(bet["amount"])
         total_bet += amt
 
-        # Tie: T wins; P/B refunded
         if result == "T":
             if choice == "T":
                 payout = int(amt * PAYOUTS["T"])
@@ -354,12 +471,12 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
                 total_payout += payout
                 lines.append(f"🎯 {uid} +{payout}")
             else:
+                # refund
                 credit(uid, amt)
-                total_payout += amt  # important for correct house accounting
+                total_payout += amt
                 lines.append(f"↩️ {uid} 환급 +{amt}")
             continue
 
-        # Non-tie: only exact side wins
         if choice == result:
             payout = int(amt * PAYOUTS[result])
             credit(uid, payout)
@@ -368,7 +485,6 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
         else:
             lines.append(f"❌ {uid} -{amt}")
 
-    # House accounting + history + cleanup
     with db() as conn:
         row = conn.execute("SELECT * FROM house WHERE chat_id=?", (chat_id,)).fetchone()
         if not row:
@@ -388,11 +504,15 @@ async def settle_round(app: Application, chat_id: int, round_id: int):
         conn.execute("UPDATE rounds SET status='CLOSED' WHERE chat_id=? AND round_id=?", (chat_id, round_id))
         conn.commit()
 
-    # Send road + settlement
+    # 1) reveal gif (cards one-by-one)
+    reveal_gif = make_reveal_gif(player, banker, p, b, result)
+    await app.bot.send_animation(chat_id, animation=reveal_gif)
+
+    # 2) big road image
     road_img = draw_road_image_bytes(chat_id)
     await app.bot.send_photo(chat_id, photo=road_img)
 
-    # avoid huge messages
+    # 3) settlement lines
     msg = "\n".join(lines)
     if len(msg) > 3500:
         msg = msg[:3500] + "\n…(생략)"
@@ -453,7 +573,6 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rid = int(r["round_id"])
 
-        # One bet per user per round
         exists = conn.execute(
             "SELECT 1 FROM bets WHERE chat_id=? AND round_id=? AND user_id=?",
             (chat.id, rid, u.id)
@@ -533,7 +652,9 @@ async def cmd_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
     credit(u.id, prize)
-    await update.message.reply_text(f"룰렛 🎰 +{prize}  (남은 횟수: {SPIN_DAILY_LIMIT - (used + 1)} / 잔액: {get_points(u.id)})")
+    await update.message.reply_text(
+        f"룰렛 🎰 +{prize}  (남은 횟수: {SPIN_DAILY_LIMIT - (used + 1)} / 잔액: {get_points(u.id)})"
+    )
 
 
 async def cmd_road(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -549,11 +670,8 @@ async def cmd_bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
     with db() as conn:
-        rows = conn.execute(
-            "SELECT user_id, username, points FROM users ORDER BY points DESC LIMIT 10"
-        ).fetchall()
+        rows = conn.execute("SELECT user_id, username, points FROM users ORDER BY points DESC LIMIT 10").fetchall()
 
     if not rows:
         await update.message.reply_text("랭킹 데이터가 없어.")
@@ -593,7 +711,6 @@ def main():
     app.add_handler(CommandHandler("spin", cmd_spin))
     app.add_handler(CommandHandler("road", cmd_road))
 
-    # extras
     app.add_handler(CommandHandler("bal", cmd_bal))
     app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CommandHandler("house", cmd_house))
