@@ -215,12 +215,16 @@ def ensure_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> dict:
         )
         conn.commit()
 
+    if context.job_queue:
     job = context.job_queue.run_once(
         close_round_job,
         when=ROUND_SECONDS,
         data={"chat_id": chat_id, "round_id": rid},
         name=f"close_round:{chat_id}:{rid}",
     )
+else:
+    job = None
+    
 
     st = {"round_id": rid, "job": job, "started_at": time.time()}
     ROUND_BY_CHAT[chat_id] = st
