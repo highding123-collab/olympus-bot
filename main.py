@@ -22,20 +22,20 @@ from PIL import Image, ImageDraw, ImageFont
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = "casino.db"
 
-STARTING_POINTS = 1000000
+STARTING_POINTS = 500000
 ROUND_SECONDS = 60
 
-DAILY_REWARD = 10_000
-SPIN_DAILY_LIMIT = 3
+DAILY_REWARD = 100000
+SPIN_DAILY_LIMIT = 5
 
 SPIN_TABLE = [
-    (0, 10),
-    (500, 25),
-    (1000, 30),
-    (3000, 18),
-    (10000, 12),
-    (50000, 4),
-    (100000, 1),
+    (5000, 10),
+    (10000, 25),
+    (15000, 30),
+    (30000, 18),
+    (50000, 12),
+    (100000, 4),
+    (1000000, 1),
 ]
 
 BET_CHOICES = {"P": "플레이어", "B": "뱅커", "T": "타이"}
