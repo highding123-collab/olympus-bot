@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = "casino.db"
 
-STARTING_POINTS = 200_000
+STARTING_POINTS = 1000000
 ROUND_SECONDS = 60
 
 DAILY_REWARD = 10_000
