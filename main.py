@@ -17,22 +17,16 @@ from telegram.ext import (
 
 from PIL import Image, ImageDraw
 
-# =========================
-# ENV
-# =========================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "baccarat_sim.db")
 
 ADMIN_IDS = set()
-if os.getenv("ADMIN_IDS"): @uzisgod, uzisgod
+if os.getenv("ADMIN_IDS"):uzisgod
     try:
         ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS").split(",") if x.strip()}
     except Exception:
         ADMIN_IDS = set()
 
-# =========================
-# CONFIG
-# =========================
 ROUND_SECONDS = 60
 DECKS = 8
 
@@ -59,9 +53,6 @@ RANK = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
 RESULT_TEXT = {"P": "PLAYER", "B": "BANKER", "T": "TIE"}
 
-# =========================
-# DB
-# =========================
 def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -148,9 +139,6 @@ def now_iso() -> str:
 def utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-# =========================
-# USER / POINTS
-# =========================
 def ensure_user(user_id: int, username: str | None):
     with db() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -181,9 +169,6 @@ def add_points(user_id: int, delta: int):
         conn.execute("UPDATE users SET points = points + ? WHERE user_id=?", (delta, user_id))
         conn.commit()
 
-# =========================
-# SHOE
-# =========================
 def card_value(rank: str) -> int:
     if rank == "A":
         return 1
@@ -223,11 +208,9 @@ def set_shoe(chat_id: int, deck, pos: int):
 
 def draw_card(chat_id: int):
     deck, pos = get_shoe(chat_id)
-
     if pos >= len(deck) - 6:
         deck = create_shoe()
         pos = 0
-
     card = deck[pos]
     pos += 1
     set_shoe(chat_id, deck, pos)
@@ -237,9 +220,6 @@ def shoe_remaining(chat_id: int) -> int:
     deck, pos = get_shoe(chat_id)
     return max(0, len(deck) - pos)
 
-# =========================
-# BACCARAT SIMULATOR
-# =========================
 def hand_total(hand) -> int:
     return sum(card_value(r) for r, _s in hand) % 10
 
@@ -265,7 +245,6 @@ def play_baccarat(chat_id: int):
             b = hand_total(banker)
     else:
         third_val = card_value(player_third[0])
-
         if b <= 2:
             banker.append(draw_card(chat_id))
         elif b == 3 and third_val != 8:
@@ -276,7 +255,6 @@ def play_baccarat(chat_id: int):
             banker.append(draw_card(chat_id))
         elif b == 6 and 6 <= third_val <= 7:
             banker.append(draw_card(chat_id))
-
         b = hand_total(banker)
 
     return player, banker, p, b
@@ -291,9 +269,6 @@ def result_from_totals(p: int, b: int) -> str:
 def fmt_hand(hand) -> str:
     return " ".join([f"{r}{s}" for r, s in hand])
 
-# =========================
-# ROAD
-# =========================
 def next_round_id(chat_id: int) -> int:
     with db() as conn:
         row = conn.execute(
@@ -367,7 +342,6 @@ def draw_road_image(chat_id: int):
         cx = col * cell + cell // 2
         cy = row * cell + cell // 2
         radius = 16
-
         color = "blue" if result == "P" else "red"
 
         draw.ellipse(
@@ -375,7 +349,6 @@ def draw_road_image(chat_id: int):
             outline=color,
             width=3
         )
-
         last = result
 
     for c, r in tie_marks:
@@ -391,9 +364,6 @@ def draw_road_image(chat_id: int):
     img.save(path)
     return path
 
-# =========================
-# PICK / PREDICTION
-# =========================
 def set_round_state(chat_id: int, round_id: int, status: str, closes_at: str | None):
     with db() as conn:
         conn.execute(
@@ -486,7 +456,7 @@ def get_pick_stat(chat_id: int, user_id: int):
 
 def get_pick_rank(chat_id: int):
     with db() as conn:
-        rows = conn.execute(
+        return conn.execute(
             """
             SELECT ps.user_id, ps.hit_count, ps.total_count, ps.streak, ps.max_streak, u.username
             FROM pick_stats ps
@@ -497,11 +467,7 @@ def get_pick_rank(chat_id: int):
             """,
             (chat_id,)
         ).fetchall()
-    return rows
 
-# =========================
-# POINT REWARDS
-# =========================
 async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     u = update.effective_user
@@ -513,7 +479,6 @@ async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT 1 FROM daily_claims WHERE chat_id=? AND user_id=? AND day_utc=?",
             (chat.id, u.id, day)
         ).fetchone()
-
         if row:
             await update.effective_message.reply_text("✅ 오늘은 이미 받았어!")
             return
@@ -574,7 +539,6 @@ async def on_message_activity(update: Update, context: ContextTypes.DEFAULT_TYPE
     ensure_user(u.id, u.username)
 
     day = utc_day()
-
     with db() as conn:
         row = conn.execute(
             "SELECT msg_count, rewarded_steps FROM activity WHERE chat_id=? AND user_id=? AND day_utc=?",
@@ -606,30 +570,26 @@ async def on_message_activity(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         conn.commit()
 
-# =========================
-# INFO COMMANDS
-# =========================
 HELP_TEXT = (
     "🃏 Baccarat Practice Simulator\n"
     "— Simulator —\n"
-    "• /deal  즉시 한 판 실행\n"
-    "• /auto  60초 후 자동 실행\n"
-    "• /pick P|B|T  결과 예측\n"
-    "• /road  결과판 이미지\n"
-    "• /shoe  슈 남은 카드 수\n"
-    "• /reset_shoe  새 8덱으로 리셋\n"
-    "• /reset_road  이 방 결과판 초기화\n\n"
+    "• /deal\n"
+    "• /auto\n"
+    "• /pick P|B|T\n"
+    "• /road\n"
+    "• /shoe\n"
+    "• /reset_shoe\n"
+    "• /reset_road\n\n"
     "— Points —\n"
-    "• /daily  출석 보상\n"
-    "• /spin   무료 보너스\n"
-    "• /me     내 포인트\n"
-    "• /rank   포인트 랭킹\n\n"
+    "• /daily\n"
+    "• /spin\n"
+    "• /me\n"
+    "• /rank\n\n"
     "— Pick Stats —\n"
-    "• /mystats   내 예측 통계\n"
-    "• /pickrank  예측 랭킹\n\n"
+    "• /mystats\n"
+    "• /pickrank\n\n"
     "— Admin —\n"
-    "• /giveid USER_ID AMOUNT\n\n"
-    "⚠️ 이 봇은 베팅/정산 없는 연습용 시뮬레이터입니다."
+    "• /giveid USER_ID AMOUNT"
 )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,9 +649,6 @@ async def cmd_giveid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_points(target_id, amount)
     await update.effective_message.reply_text(f"✅ {target_id} 에게 +{amount}")
 
-# =========================
-# PICK COMMANDS
-# =========================
 async def cmd_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     u = update.effective_user
@@ -755,15 +712,10 @@ async def cmd_pickrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = int(r["total_count"])
         hits = int(r["hit_count"])
         acc = 0.0 if total == 0 else (hits / total) * 100
-        lines.append(
-            f"{i}. {name} - 적중 {hits}/{total} ({acc:.1f}%) | 🔥{r['max_streak']}"
-        )
+        lines.append(f"{i}. {name} - 적중 {hits}/{total} ({acc:.1f}%) | 🔥{r['max_streak']}")
 
     await update.effective_message.reply_text("\n".join(lines))
 
-# =========================
-# DEAL / AUTO
-# =========================
 async def do_deal(application: Application, chat_id: int):
     rid = next_round_id(chat_id)
     player, banker, p, b = play_baccarat(chat_id)
@@ -815,7 +767,6 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     state = get_round_state(chat_id)
-
     if state and state["status"] == "OPEN":
         await update.effective_message.reply_text("⏳ 이미 자동 실행 예약돼 있어!")
         return
@@ -826,9 +777,7 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_round_state(chat_id, rid, "OPEN", closes_iso)
 
     await update.effective_message.reply_text(
-        f"⏱ Hand #{rid}\n"
-        f"{ROUND_SECONDS}초 후 자동 실행\n"
-        f"예측하려면: /pick P|B|T"
+        f"⏱ Hand #{rid}\n{ROUND_SECONDS}초 후 자동 실행\n예측하려면: /pick P|B|T"
     )
 
     async def _task():
@@ -840,9 +789,6 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.application.create_task(_task())
 
-# =========================
-# ROAD / SHOE RESET
-# =========================
 async def cmd_road(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     results = build_road(chat_id)
@@ -874,9 +820,6 @@ async def cmd_reset_road(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
     await update.effective_message.reply_text("✅ Road / Pick 기록 초기화 완료")
 
-# =========================
-# MAIN
-# =========================
 def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN 환경변수가 비어있음")
@@ -885,7 +828,6 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    # simulator
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("deal", cmd_deal))
@@ -896,7 +838,6 @@ def main():
     app.add_handler(CommandHandler("reset_shoe", cmd_reset_shoe))
     app.add_handler(CommandHandler("reset_road", cmd_reset_road))
 
-    # points
     app.add_handler(CommandHandler("daily", cmd_daily))
     app.add_handler(CommandHandler("spin", cmd_spin))
     app.add_handler(CommandHandler("me", cmd_me))
@@ -905,7 +846,6 @@ def main():
     app.add_handler(CommandHandler("pickrank", cmd_pickrank))
     app.add_handler(CommandHandler("giveid", cmd_giveid))
 
-    # activity
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message_activity))
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
