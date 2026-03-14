@@ -21,7 +21,7 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "baccarat_sim.db")
 
 ADMIN_IDS = set()
-if os.getenv("ADMIN_IDS"):uzisgod
+if os.getenv("ADMIN_IDS"):
     try:
         ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS").split(",") if x.strip()}
     except Exception:
